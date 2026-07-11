@@ -1,0 +1,95 @@
+name: Daily faceless short
+
+on:
+  schedule:
+    - cron: "0 17 * * *"   # 12:00 pm US Central (17:00 UTC). Edit to taste.
+  workflow_dispatch: {}     # manual "Run workflow" button
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-short
+  cancel-in-progress: false
+
+jobs:
+  generate-and-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q -r requirements.txt
+
+      - name: Cache Kokoro voice model
+        id: kokoro-cache
+        uses: actions/cache@v4
+        with:
+          path: voice
+          key: kokoro-v1.0
+
+      - name: Download Kokoro voice model
+        if: steps.kokoro-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p voice
+          curl -sL -o voice/kokoro-v1.0.onnx \
+            https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+          curl -sL -o voice/voices-v1.0.bin \
+            https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
+
+      - name: Generate today's video
+        id: gen
+        run: python3 pipeline/run_daily.py
+
+      - name: Host video publicly (release asset, needed for Instagram)
+        id: host
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="video-${{ steps.gen.outputs.slug }}"
+          gh release create "$TAG" "${{ steps.gen.outputs.video }}" \
+            --title "$TAG" --notes "auto" || \
+            gh release upload "$TAG" "${{ steps.gen.outputs.video }}" --clobber
+          NAME=$(basename "${{ steps.gen.outputs.video }}")
+          echo "url=https://github.com/${{ github.repository }}/releases/download/$TAG/$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Post to Instagram
+        if: ${{ vars.ENABLE_INSTAGRAM == 'true' }}
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+        run: python3 pipeline/post_instagram.py "${{ steps.host.outputs.url }}" "${{ steps.gen.outputs.meta }}"
+
+      - name: Post to YouTube
+        if: ${{ vars.ENABLE_YOUTUBE == 'true' }}
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: python3 pipeline/post_youtube.py "${{ steps.gen.outputs.video }}" "${{ steps.gen.outputs.meta }}"
+
+      - name: Commit updated history
+        run: |
+          git config user.name "pipeline-bot"
+          git config user.email "actions@github.com"
+          git add content/history.json
+          git commit -m "post: ${{ steps.gen.outputs.slug }}" || echo "nothing to commit"
+          git push
+
+      - name: Clean up old releases (keep 7 days)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '.[] | select(.createdAt < (now - 604800 | todate)) | .tagName' |
+          while read -r tag; do
+            gh release delete "$tag" --cleanup-tag --yes || true
+          done
