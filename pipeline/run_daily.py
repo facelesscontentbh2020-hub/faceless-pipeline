@@ -57,6 +57,14 @@ def main():
     today = datetime.date.today().isoformat()
     script["slug"] = f"{today}_{script['slug']}"
 
+    # Round-robin voice + music by post count: consecutive posts are always
+    # different (8 voices x 4 styles = 32 combos before any exact repeat).
+    n = len(history)
+    script["voice"] = make_video.VOICES[n % len(make_video.VOICES)][0]
+    styles = sorted(make_video.MUSIC_STYLES)
+    script["music_style"] = styles[n % len(styles)]
+    print(f"rotation #{n}: voice={script['voice']} music={script['music_style']}")
+
     os.makedirs(OUT, exist_ok=True)
     sp = os.path.join(OUT, "todays_script.json")
     with open(sp, "w") as f:

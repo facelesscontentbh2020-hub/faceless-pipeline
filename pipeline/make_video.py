@@ -19,34 +19,40 @@ GAP = 0.18
 # channel doesn't sound like one robot on a loop.
 VOICES = [
     ("am_michael", 0.98),   # warm US male (the original)
-    ("am_onyx", 0.96),      # deep US male
-    ("am_fenrir", 1.02),    # energetic US male
+    ("am_onyx", 0.94),      # deep, slow US male
+    ("am_fenrir", 1.04),    # energetic, fast US male
     ("af_heart", 1.00),     # natural US female
-    ("af_bella", 1.00),     # bright US female
-    ("bm_george", 0.97),    # British male
+    ("af_bella", 1.02),     # bright, upbeat US female
+    ("bm_george", 0.96),    # measured British male
+    ("af_sarah", 0.99),     # calm US female
+    ("am_eric", 1.01),      # lively US male
 ]
 
 _kokoro = None
 _voice_choice = None
 
 
-def pick_voice(seed_text):
-    """Stable per-video choice: same script -> same voice, different scripts vary."""
+def pick_voice(seed_text, override=None):
+    """Explicit override (script['voice']) wins; otherwise stable hash choice."""
     global _voice_choice
     if _voice_choice is None:
-        idx = int(__import__("hashlib").md5(seed_text.encode()).hexdigest(), 16) % len(VOICES)
-        _voice_choice = VOICES[idx]
+        if override:
+            match = [v for v in VOICES if v[0] == override]
+            _voice_choice = match[0] if match else (override, 1.0)
+        else:
+            idx = int(__import__("hashlib").md5(seed_text.encode()).hexdigest(), 16) % len(VOICES)
+            _voice_choice = VOICES[idx]
         print(f"voice: {_voice_choice[0]} @ {_voice_choice[1]}")
     return _voice_choice
 
 
-def synth_line(text, out_wav, seed_text=""):
+def synth_line(text, out_wav, seed_text="", voice_override=None):
     global _kokoro
     import numpy as np
     if _kokoro is None:
         from kokoro_onnx import Kokoro
         _kokoro = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
-    voice, speed = pick_voice(seed_text or text)
+    voice, speed = pick_voice(seed_text or text, override=voice_override)
     samples, sr = _kokoro.create(text, voice=voice, speed=speed)
     pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
     with wave.open(out_wav, "w") as w:
@@ -85,11 +91,14 @@ MUSIC_STYLES = {
 }
 
 
-def make_music(duration, out_wav, seed_text="", sr=22050):
+def make_music(duration, out_wav, seed_text="", style_override=None, sr=22050):
     import numpy as np
-    style_name = sorted(MUSIC_STYLES)[
-        int(__import__("hashlib").md5(("m" + seed_text).encode()).hexdigest(), 16)
-        % len(MUSIC_STYLES)]
+    if style_override in MUSIC_STYLES:
+        style_name = style_override
+    else:
+        style_name = sorted(MUSIC_STYLES)[
+            int(__import__("hashlib").md5(("m" + seed_text).encode()).hexdigest(), 16)
+            % len(MUSIC_STYLES)]
     st = MUSIC_STYLES[style_name]
     print(f"music: {style_name}")
     n = int(duration * sr)
@@ -223,14 +232,16 @@ def make(script_path, out_dir):
     wavs, durations = [], []
     for i, line in enumerate(lines):
         wv = os.path.join(tmp, f"l{i}.wav")
-        durations.append(synth_line(line, wv, seed_text=sc["slug"]))
+        durations.append(synth_line(line, wv, seed_text=sc["slug"],
+                                    voice_override=sc.get("voice")))
         wavs.append(wv)
     total = sum(durations) + GAP * (len(lines) - 1)
 
     voice_all = os.path.join(tmp, "voice.wav")
     concat_voice(wavs, voice_all)
     music = os.path.join(tmp, "music.wav")
-    make_music(total + 0.6, music, seed_text=sc["slug"])
+    make_music(total + 0.6, music, seed_text=sc["slug"],
+               style_override=sc.get("music_style"))
 
     picks = pick_broll(lines, sc.get("keywords"))
     segs = [render_segment(c, d, i, tmp) for i, (c, d) in enumerate(zip(picks, durations))]
