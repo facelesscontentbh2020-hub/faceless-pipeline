@@ -14,18 +14,40 @@ FONT = os.path.join(BASE, "Anton-Regular.ttf")
 FONT_NAME = "Anton" if os.path.exists(FONT) else "DejaVu Sans"
 W, H, FPS = 1080, 1920, 30
 GAP = 0.18
-VOICE_NAME = "am_michael"
+
+# Curated narration voices (Kokoro v1.0) and pacing — rotated per video so the
+# channel doesn't sound like one robot on a loop.
+VOICES = [
+    ("am_michael", 0.98),   # warm US male (the original)
+    ("am_onyx", 0.96),      # deep US male
+    ("am_fenrir", 1.02),    # energetic US male
+    ("af_heart", 1.00),     # natural US female
+    ("af_bella", 1.00),     # bright US female
+    ("bm_george", 0.97),    # British male
+]
 
 _kokoro = None
+_voice_choice = None
 
 
-def synth_line(text, out_wav):
+def pick_voice(seed_text):
+    """Stable per-video choice: same script -> same voice, different scripts vary."""
+    global _voice_choice
+    if _voice_choice is None:
+        idx = int(__import__("hashlib").md5(seed_text.encode()).hexdigest(), 16) % len(VOICES)
+        _voice_choice = VOICES[idx]
+        print(f"voice: {_voice_choice[0]} @ {_voice_choice[1]}")
+    return _voice_choice
+
+
+def synth_line(text, out_wav, seed_text=""):
     global _kokoro
     import numpy as np
     if _kokoro is None:
         from kokoro_onnx import Kokoro
         _kokoro = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
-    samples, sr = _kokoro.create(text, voice=VOICE_NAME, speed=0.98)
+    voice, speed = pick_voice(seed_text or text)
+    samples, sr = _kokoro.create(text, voice=voice, speed=speed)
     pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
     with wave.open(out_wav, "w") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
@@ -46,26 +68,50 @@ def concat_voice(wavs, out_wav):
                 out.writeframes(silence)
 
 
-def make_music(duration, out_wav, sr=22050):
+# Four procedural music styles, rotated per video.
+MUSIC_STYLES = {
+    "ambient_minor": dict(bar=4.0, octave=0.20, pulse=0.0, chords=[
+        [110.0, 130.81, 164.81], [98.0, 123.47, 146.83],
+        [87.31, 110.0, 130.81], [103.83, 123.47, 155.56]]),
+    "uplift_major": dict(bar=3.2, octave=0.16, pulse=0.0, chords=[
+        [130.81, 164.81, 196.0], [146.83, 174.61, 220.0],
+        [110.0, 138.59, 164.81], [123.47, 155.56, 185.0]]),
+    "dark_tension": dict(bar=5.0, octave=0.10, pulse=0.0, chords=[
+        [82.41, 98.0, 123.47], [77.78, 92.5, 116.54],
+        [82.41, 103.83, 123.47], [73.42, 87.31, 110.0]]),
+    "lofi_pulse": dict(bar=2.4, octave=0.14, pulse=0.10, chords=[
+        [104.65, 124.47, 155.56], [93.24, 116.54, 139.29],
+        [124.47, 155.56, 186.66], [110.0, 130.81, 164.81]]),
+}
+
+
+def make_music(duration, out_wav, seed_text="", sr=22050):
     import numpy as np
+    style_name = sorted(MUSIC_STYLES)[
+        int(__import__("hashlib").md5(("m" + seed_text).encode()).hexdigest(), 16)
+        % len(MUSIC_STYLES)]
+    st = MUSIC_STYLES[style_name]
+    print(f"music: {style_name}")
     n = int(duration * sr)
     t = np.arange(n) / sr
-    chords = [[110.0, 130.81, 164.81], [98.0, 123.47, 146.83],
-              [87.31, 110.0, 130.81], [103.83, 123.47, 155.56]]
     audio = np.zeros(n)
-    bar = 4.0
+    bar = st["bar"]
     for i in range(int(math.ceil(duration / bar))):
         s, e = int(i * bar * sr), min(int((i + 1) * bar * sr), n)
         if s >= n:
             break
         seg_t = t[s:e]
         seg = np.zeros(e - s)
-        for f in chords[i % 4]:
+        for f in st["chords"][i % 4]:
             seg += 0.28 * np.sin(2 * np.pi * f * seg_t)
-            seg += 0.10 * np.sin(2 * np.pi * f * 2 * seg_t)
+            seg += st["octave"] * np.sin(2 * np.pi * f * 2 * seg_t)
         env = np.clip(np.minimum((seg_t - seg_t[0]) / 0.8,
                                  (seg_t[-1] - seg_t) / 0.8 + 0.05), 0, 1)
         audio[s:e] += seg * env
+    if st["pulse"] > 0:  # soft rhythmic pulse for lofi feel
+        beat = 60.0 / (240.0 / bar)
+        pulse_env = 0.5 * (1 + np.cos(2 * np.pi * (t / beat % 1.0) * np.pi / np.pi))
+        audio *= (1 - st["pulse"]) + st["pulse"] * np.clip(pulse_env, 0, 1)
     audio *= 0.35 / max(1e-9, np.max(np.abs(audio)))
     fade = min(n, int(1.5 * sr))
     audio[-fade:] *= np.linspace(1, 0, fade)
@@ -177,14 +223,14 @@ def make(script_path, out_dir):
     wavs, durations = [], []
     for i, line in enumerate(lines):
         wv = os.path.join(tmp, f"l{i}.wav")
-        durations.append(synth_line(line, wv))
+        durations.append(synth_line(line, wv, seed_text=sc["slug"]))
         wavs.append(wv)
     total = sum(durations) + GAP * (len(lines) - 1)
 
     voice_all = os.path.join(tmp, "voice.wav")
     concat_voice(wavs, voice_all)
     music = os.path.join(tmp, "music.wav")
-    make_music(total + 0.6, music)
+    make_music(total + 0.6, music, seed_text=sc["slug"])
 
     picks = pick_broll(lines, sc.get("keywords"))
     segs = [render_segment(c, d, i, tmp) for i, (c, d) in enumerate(zip(picks, durations))]
