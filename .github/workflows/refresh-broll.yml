@@ -1,0 +1,40 @@
+name: Refresh b-roll library
+
+on:
+  schedule:
+    - cron: "0 8 * * 0"   # Sundays 08:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-broll
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch new clips from Pexels
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          pip install -q requests
+          python3 pipeline/refresh_broll.py
+
+      - name: Commit new clips
+        run: |
+          git config user.name "pipeline-bot"
+          git config user.email "actions@github.com"
+          git add broll/
+          git commit -m "broll: weekly refresh" || echo "nothing new"
+          git pull --rebase
+          git push

@@ -86,6 +86,17 @@ Repo → Settings → Secrets and variables → Actions:
 - `ENABLE_INSTAGRAM` = `true`
 - `ENABLE_YOUTUBE` = `true`  (or `false` until the channel/API is ready)
 
+## 4b. Pexels API — self-refreshing b-roll (5 min)
+
+1. Go to https://www.pexels.com/api/ → "Get Started" → sign up free (any email).
+2. Your API key is shown immediately on the dashboard.
+3. Add it as a repo secret: Settings → Secrets and variables → Actions → New secret
+   → name `PEXELS_API_KEY`.
+4. The "Refresh b-roll library" workflow then runs every Sunday: it pulls ~8 new
+   portrait clips (~1080p) straight from Pexels into `broll/` on GitHub's servers —
+   nothing ever downloads to your computer. Trigger it manually anytime from the
+   Actions tab. Library is capped at 150 clips / ~90MB per file.
+
 ## 5. Test
 
 Repo → Actions → "Daily faceless short" → **Run workflow**. Watch the log.
